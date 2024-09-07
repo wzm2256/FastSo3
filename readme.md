@@ -68,8 +68,9 @@ message, message_0 = so2.get_message(x, x_L0, w, w_L0, edges_vec, so2_conv, L)
 ### More details
 
 1. FastSo3 provides two layers``SO2_conv_e`` and ``SO2_conv``:
-    1. ``SO2_conv_e`` is the efficient version which is equivalent to the official implement. It maps the feature to lower dimension space to achieve better efficiency.
-    2. ``SO2_conv`` is the real linear map between the input and ouput. It can be expensive for large graphs, high degrees or large channels. 
+    1. ``SO2_conv_e`` is the efficient version which is equivalent to the official implement. It maps the feature to lower dimensional space to achieve better efficiency.
+    2. ``SO2_conv`` is the linear map between the input and ouput. It is conceptually simpler, but it can be expensive for large graphs, high degrees or large channels. 
+* Note these two layers use weights of different shapes. See the source code and the script `check_equi.py` for details and more examples.
 
 2. The equivariance of the layer can be checked by running the `check_equi.py` script:
 ```
@@ -80,3 +81,5 @@ message, message_0 = so2.get_message(x, x_L0, w, w_L0, edges_vec, so2_conv, L)
 # The invariance error: 3.5846128412231337e-06
 ```
 
+### LICENSE
+FastSo3 is available under a [MIT license](LICENSE).
