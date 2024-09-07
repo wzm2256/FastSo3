@@ -54,7 +54,7 @@ x = x_* M
 # extra degree 0 input
 x_L0 = torch.randn((b, c_L0_in))
 
-# invariant weight
+# weight
 w = torch.randn((b, c_in, L, L * 2, c_out, L))
 w_L0 = torch.randn((b, c_L0_in + c_in * L, c_L0_out + c_out * L))
 
