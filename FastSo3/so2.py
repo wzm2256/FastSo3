@@ -36,7 +36,7 @@ class SO2_conv_e(torch.nn.Module):
     Weights are multiplied to low dim features.
     '''
 
-    def __init__(self, c_in: int, c_out: int, c_hidden:int, L: int, c_L0_in=0, c_L0_out=0):
+    def __init__(self, c_in: int, c_out: int, c_hidden:int, L: int, c_L0_in:int = 0, c_L0_out: int = 0, bias: bool = False):
         '''
 
         Args:
@@ -61,10 +61,12 @@ class SO2_conv_e(torch.nn.Module):
         self.c_L0_in = c_L0_in
         self.c_L0_out = c_L0_out
         self.c_hidden = c_hidden
-
+        self.bias = bias
 
         self.en0 = nn.Parameter(torch.empty((c_in * L + c_L0_in, c_hidden)))
         self.de0 = nn.Parameter(torch.empty((c_hidden, c_out * L + c_L0_out)))
+        if bias:
+            self.bias_0 = nn.Parameter(torch.zeros((1, c_out * L + c_L0_out)))
 
         self.en1 = nn.Parameter(torch.empty((c_in, L, c_hidden, L)))
         self.de1 = nn.Parameter(torch.empty((c_hidden, c_out, L, L)))
@@ -112,6 +114,9 @@ class SO2_conv_e(torch.nn.Module):
         en_x0 = einops.einsum(self.en0, all_x_m0, 'c h, b c -> b h')
         new_x0 = en_x0 * w_L0
         de_x0 = einops.einsum(self.de0, new_x0, 'h c, b h -> b c')
+        if self.bias:
+            de_x0 = de_x0 + self.bias_0
+
         y_m0 = de_x0[:, self.c_L0_out:].view((-1, self.c_out, self.L, 1))
         y_L0 = de_x0[:, :self.c_L0_out]
 
@@ -141,7 +146,7 @@ class SO2_conv(torch.nn.Module):
     '''
     Computing SO3 equivariant message in the reference frame where the edge is rotated to y axis.
     '''
-    def __init__(self, c_in: int, c_out: int, L: int, c_L0_in=0, c_L0_out=0):
+    def __init__(self, c_in: int, c_out: int, L: int, c_L0_in=0, c_L0_out=0, bias: bool = False):
         '''
 
         Args:
@@ -165,6 +170,10 @@ class SO2_conv(torch.nn.Module):
         self.c_out = c_out
         self.c_L0_in = c_L0_in
         self.c_L0_out = c_L0_out
+        self.bias = bias
+
+        if bias:
+            self.bias_0 = nn.Parameter(torch.zeros((1, c_out * L + c_L0_out)))
 
     def forward(self, x: torch.Tensor, x_L0: torch.Tensor, w: torch.Tensor, w_L0: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         '''
@@ -201,12 +210,160 @@ class SO2_conv(torch.nn.Module):
         all_x_m0 = torch.cat([x_L0, torch.flatten(x_m0, start_dim=1)], 1) # B, c_in * L + c_L0_in
         all_y_m0 = einops.einsum(w_L0, all_x_m0, 'b c d, b c -> b d') # B, c_L0_out + c_out * L
 
+        if self.bias:
+            all_y_m0 = all_y_m0 + self.bias
+
         y_m0 = all_y_m0[:, self.c_L0_out:].view((-1, self.c_out, self.L, 1))
         y_L0 = all_y_m0[:, :self.c_L0_out]
 
         y = torch.cat([y_minus, y_m0, y_plus], axis=-1) * self.Mask_out
         return y, y_L0
-    
+
+
+class SO2_conv_c(torch.nn.Module):
+    '''
+    The depth wise SO2 equivariant convolution.
+    '''
+
+    def __init__(self, c_in: int, L: int, c_L0_in=0, bias:bool = False):
+        '''
+
+        Args:
+            c_in: input channel for L>0 degree features
+            c_out: ouput channel for L>0 degree features
+            L: maximum feature degree
+            c_L0_in: input channel for 0-degree features
+            c_L0_out: output channel for 0-degree features
+        '''
+        super().__init__()
+        assert c_in >= 0, 'c_in must be >= 0'
+        assert L >= 0, 'L must be >= 0'
+        assert c_L0_in >= 0, 'c_L0_in must be >= 0'
+
+        self.register_buffer('Mask_out', get_mask(L))
+        self.L = L
+        self.c_in = c_in
+        self.c_L0_in = c_L0_in
+        self.bias = bias
+
+        if bias:
+            self.bias_0 = nn.Parameter(torch.zeros((1, c_in * L + c_L0_in)))
+
+
+    def forward(self, x: torch.Tensor, x_L0: torch.Tensor, w: torch.Tensor, w_L0: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+        '''
+        x and x_L0 are the equivariant and invariant features of the source nodes.
+        w and w_L0 are the learnable weights for x and x_L0.
+        The output y and y_L0 are the equivariant and invariant messages.
+
+        x:    B, c_in, L, 2L+1
+        x_L0: B, c_L0_in
+        w:    B, c_in, L, 2*L
+        w_L0: B, c_L0_in + c_in * L
+
+        output:
+        y:    B, c_in, L, 2L+1
+        y_L0: B, c_L0_in
+        '''
+
+        # check shape
+        assert x.shape[1:] == (self.c_in, self.L, self.L * 2 + 1), 'Inconsistent x shape'
+        assert x_L0.shape[1] == self.c_L0_in, 'Inconsistent x_L0 shape'
+        assert w.shape[1:] == (self.c_in, self.L, self.L * 2), 'Inconsistent w shape'
+        assert w_L0.shape[1:] == (self.c_L0_in + self.c_in * self.L,), 'Inconsistent w_0 shape'
+        assert x.shape[0] == x_L0.shape[0] == w.shape[0] == w_L0.shape[0], 'Inconsistent edge number'
+
+        w_minus, w_plus = torch.split(w, self.L, dim=3)  # w_minus and w_plus: b, c, L, L
+        x_minus, x_m0, x_plus = torch.split(x, [self.L, 1, self.L], dim=-1)  # x_minus and x_plus B, c_in, L, L x_m0:B, c_in, L
+
+        y_plus = w_plus * x_plus - torch.flip(w_minus * x_minus, [3])
+        y_minus = torch.flip(w_plus, [3]) * x_minus + w_minus * torch.flip(x_plus, [3])
+
+        all_x_m0 = torch.cat([x_L0, torch.flatten(x_m0, start_dim=1)], 1)  # B, c_in * L + c_L0_in
+        all_y_m0 = einops.einsum(w_L0, all_x_m0, 'b c, b c -> b c')  # B, c_L0_out + c_out * L
+
+        if self.bias:
+            all_y_m0 = all_y_m0 + self.bias_0
+
+
+        y_m0 = all_y_m0[:, self.c_L0_in:].view((-1, self.c_in, self.L, 1))
+        y_L0 = all_y_m0[:, :self.c_L0_in]
+
+        y = torch.cat([y_minus, y_m0, y_plus], axis=-1) * self.Mask_out
+        return y, y_L0
+
+class SO2_mix_c(torch.nn.Module):
+    '''
+    Mix channels of a SO2 equivariant feature.
+    Note: This is not a convolutional layer, because it does not require the weight w.
+    '''
+
+    def __init__(self, c_in: int, c_out:int, L:int, c_L0_in: int = 0, c_L0_out: int = 0, bias:bool = False):
+        '''
+
+        Args:
+            c_in: input channel for L>0 degree features
+            c_out: c_in * L channel will be compressed to c_out * L channel
+            L: maximum feature degree
+            c_L0_in: input channel for 0-degree features
+            c_L0_out: c_L0_in elements will be compressed to c_L0_out
+        '''
+        super().__init__()
+        assert c_in >= 0, 'c_in must be >= 0'
+        assert c_out >= 0, 'c_out must be >= 0'
+        assert L >= 0, 'L must be >= 0'
+        assert c_L0_in >= 0, 'c_L0_in must be >= 0'
+        assert c_L0_out >= 0, 'c_L0_out must be >= 0'
+
+        self.register_buffer('Mask_out', get_mask(L))
+        self.L = L
+        self.c_in = c_in
+        self.c_out = c_out
+        self.c_L0_in = c_L0_in
+        self.c_L0_out = c_L0_out
+        self.bias = bias
+
+        self.linear_0 = nn.Linear(c_in * L + c_L0_in, c_out * L + c_L0_out, bias=bias)
+        self.en1 = nn.Parameter(torch.empty((c_in, L, c_out, L)))
+
+        torch.nn.init.kaiming_uniform_(self.en1, a=math.sqrt(5))
+
+
+    def forward(self, x: torch.Tensor, x_L0: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+        '''
+        x and x_L0 are the equivariant and invariant features of the source nodes.
+        w and w_L0 are the learnable weights for x and x_L0.
+        The output y and y_L0 are the equivariant and invariant messages.
+
+        x:    B, c_in, L, 2L+1
+        x_L0: B, c_L0_in
+
+        output:
+        y:    B, c_out, L, 2L+1
+        y_L0: B, c_L0_out
+        '''
+
+        # check shape
+        assert x.shape[1:] == (self.c_in, self.L, self.L * 2 + 1), 'Inconsistent x shape'
+        assert x_L0.shape[1] == self.c_L0_in, 'Inconsistent x_L0 shape'
+        assert x.shape[0] == x_L0.shape[0], 'Inconsistent edge number'
+
+        x_minus, x_m0, x_plus = torch.split(x, [self.L, 1, self.L], dim=-1) # x_minus and x_plus B, c_in, L, L x_m0:B, c_in, L
+
+        ### compute m=0
+        all_x_m0 = torch.cat([x_L0, torch.flatten(x_m0, start_dim=1)], 1) # B, c_in * L + c_L0_in
+        en_x0 = self.linear_0(all_x_m0)
+
+        y_m0 = en_x0[:, self.c_L0_out:].view((-1, self.c_out, self.L, 1))
+        y_L0 = en_x0[:, :self.c_L0_out]
+
+        ### compute m> 0
+        x_L = torch.cat([x_minus, x_plus], -1)
+        en_xL = einops.einsum(self.en1, x_L, 'c l d o, b c l m -> b d o m')
+
+        y = torch.cat([en_xL[:,:,:, :self.L], y_m0, en_xL[:,:,:, self.L:]], axis=-1) * self.Mask_out
+        return y, y_L0
+
 
 def get_message(x, x_L0, w, w_L0, edges_vec, conv, L):
     rotation = so3.init_edge_rot_mat(edges_vec)
@@ -216,6 +373,17 @@ def get_message(x, x_L0, w, w_L0, edges_vec, conv, L):
 
     message = so3.rotate(W.mT, message_so2)
     return  message, message_L0
+
+
+def get_message_mix(x, x_L0, edges_vec, conv, L):
+    rotation = so3.init_edge_rot_mat(edges_vec)
+    W = so3.RotationToWignerDMatrix(rotation, L)
+    x_W = so3.rotate(W, x)
+    message_so2, message_L0 = conv(x_W, x_L0)
+
+    message = so3.rotate(W.mT, message_so2)
+    return message, message_L0
+
 
 
 if __name__ == '__main__':
@@ -231,6 +399,9 @@ if __name__ == '__main__':
     so2_conv = SO2_conv(c_in, c_out, L, c_L0_in=c_L0_in, c_L0_out=c_L0_out)
 
     x_ = torch.randn((b, c_in, L, L * 2 + 1))
+
+    pdb.set_trace()
+
     M = get_mask(L)
     x = x_* M
 
@@ -289,26 +460,26 @@ if __name__ == '__main__':
 
     # pdb.set_trace()
     ######
-    message, message_0 = get_message(x, x_L0, w, w_L0, edges_vec, so2_conv)
-
-    from scipy.spatial.transform import Rotation
-    R = torch.tensor(Rotation.random(num=1).as_matrix()).type(torch.float32)
-    R_w = so3.RotationToWignerDMatrix(R, end_lmax=L)
-
-    x_R = so3.rotate(R_w, x)
-    edges_vec_R = (R @ edges_vec.unsqueeze(-1)).squeeze(-1)
-    message_R, message_0R = get_message(x_R, x_L0, w, w_L0, edges_vec_R, so2_conv)
-
-
-    message_timesR = so3.rotate(R_w, message)
-    print((message_timesR - message_R).norm())
-    print((message_0 - message_0R).norm())
-    # pdb.set_trace()
-
-    # message_1, message_L0 = so2_conv(x, x_L0, w, w_L0)
+    # message, message_0 = get_message(x, x_L0, w, w_L0, edges_vec, so2_conv)
     #
-    # R = torch.tensor(Rotation.from_rotvec(np.array([[0, 0.3, 0]])).as_matrix()).type(torch.float32)
+    # from scipy.spatial.transform import Rotation
+    # R = torch.tensor(Rotation.random(num=1).as_matrix()).type(torch.float32)
     # R_w = so3.RotationToWignerDMatrix(R, end_lmax=L)
-    # pdb.set_trace()
-    # message_1, message_L0 = so2_conv(x, x_L0, w, w_L0)
-
+    #
+    # x_R = so3.rotate(R_w, x)
+    # edges_vec_R = (R @ edges_vec.unsqueeze(-1)).squeeze(-1)
+    # message_R, message_0R = get_message(x_R, x_L0, w, w_L0, edges_vec_R, so2_conv)
+    #
+    #
+    # message_timesR = so3.rotate(R_w, message)
+    # print((message_timesR - message_R).norm())
+    # print((message_0 - message_0R).norm())
+    # # pdb.set_trace()
+    #
+    # # message_1, message_L0 = so2_conv(x, x_L0, w, w_L0)
+    # #
+    # # R = torch.tensor(Rotation.from_rotvec(np.array([[0, 0.3, 0]])).as_matrix()).type(torch.float32)
+    # # R_w = so3.RotationToWignerDMatrix(R, end_lmax=L)
+    # # pdb.set_trace()
+    # # message_1, message_L0 = so2_conv(x, x_L0, w, w_L0)
+    #

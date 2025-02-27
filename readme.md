@@ -25,9 +25,50 @@ FastSo3 pads features of different degrees to the same size, so that they can be
 
 
 ### Usage
-Features of channels `C` and maximum degree `L`  are represented by tensors of shape `(B, C, L, 2L+1)`. For all degree `l` smaller than `L`, corresponding features are zero padded to length `2L+1`. For example, Let L=3.
+For a graph containing `B` nodes in 3D space,
+the channel `C` maximum degree `L` feature `x` are represented by a tensor of shape `(B, C, L, 2L+1)`.
+For all degree `l` smaller than `L`, corresponding features are zero padded to length `2L+1`. 
+For example, Let L=3.
 A degree-1 feature f (length=3) will be padded as [0, 0, f, 0, 0] (length=7);
 A degree-2 feature g (length=5) will be padded as [0, g, 0] (length=7).
+the degree `0` feature, i.e., the invariant feature, `x_0` takes the shape `(B, C)`. 
+
+
+To compute the message from node `i` to node `j`,
+a rotation matrix `R` is first used to rotate the edge ij to y-axis. 
+Then the feature `Rx` is used as the input to the convolution layer,
+the output is finally rotated back as the message. 
+This library provides several ways to do convolution in the second step as described as follows.
+
+In our computation, 
+both `L` and `C` are treated as channels, so we use the notation `h=CL` for simplicity.
+We also use `M = 2L` as the index of the last dimension. 
+Specifically,
+1. ``SO2_conv``: The standard convolution. 
+The kernel size is `(B, h_in, h_out, M)`. 
+It can be expensive for large `C` or `L`. 
+2. ``SO2_conv_c``: The depth-wise convolution. Each channel is processed independently, 
+and the output feature shape is the same as the input feature shape. 
+The kernel size is `(B, h_in, M)`.
+3. ``SO2_mix_c``: The linear channel mixing layer. 
+The parameter size is `(h_in, h_out)`.
+4. ``SO2_conv_e``: Implemented based on the escn paper. 
+First mix the channel, then do depth-wise convolution, 
+finally map the channel back.
+
+
+Note that these layers use weights of different shapes.
+See the source code for details.
+
+[//]: # (4. )
+
+[//]: # (    1.  is the efficient version which is equivalent to the official implement. It maps the feature to lower dimensional space to achieve better efficiency.)
+
+[//]: # (    2. ``SO2_conv`` )
+
+[//]: # (*  See the source code and the script `check_equi.py` for details and more examples.)
+
+We provide the following use case as an example.
 
 
 ```
@@ -65,14 +106,11 @@ edges_vec = torch.randn((b, 3))
 message, message_0 = so2.get_message(x, x_L0, w, w_L0, edges_vec, so2_conv, L)
 ```
 
-### More details
 
-1. FastSo3 provides two layers``SO2_conv_e`` and ``SO2_conv``:
-    1. ``SO2_conv_e`` is the efficient version which is equivalent to the official implement. It maps the feature to lower dimensional space to achieve better efficiency.
-    2. ``SO2_conv`` is the linear map between the input and ouput. It is conceptually simpler, but it can be expensive for large graphs, high degrees or large channels. 
-* Note these two layers use weights of different shapes. See the source code and the script `check_equi.py` for details and more examples.
 
-2. The equivariance of the layer can be checked by running the `check_equi.py` script:
+### More
+The equivariance of the layer can be checked by running the `check_equi.py` script.
+Uncomment different blocks to check different functions.
 ```
 >>> python check_equi.py
 
